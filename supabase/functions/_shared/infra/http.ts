@@ -1,6 +1,7 @@
 // Shared Deno HTTP plumbing for edge handlers: CORS, JSON, error mapping, input parsing.
 import { NotFoundError, ServiceBusyError, ValidationError } from "../domain/errors.ts";
 import type { AudioInput } from "../domain/ports.ts";
+import { CALL_LANGS, type CallLang, isCallLang } from "../domain/types.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -43,6 +44,13 @@ export function requireString(body: Record<string, unknown>, key: string): strin
 export function optionalString(body: Record<string, unknown>, key: string, fallback: string): string {
   const v = body[key];
   return typeof v === "string" && v.trim() !== "" ? v.trim() : fallback;
+}
+
+/** Language chosen at the start of the call ("for Swahili press 1, for English press 2"). */
+export function requireCallLang(body: Record<string, unknown>, key = "call_lang"): CallLang {
+  const v = body[key];
+  if (!isCallLang(v)) throw new ValidationError(`${key} must be one of ${CALL_LANGS.join(", ")}`);
+  return v;
 }
 
 /** `audio` = { base64, mime_type }. Decoded in memory only; never written to disk or storage. */

@@ -10,7 +10,7 @@ function setup(transcript: ConstructorParameters<typeof FakeTranscriber>[0], str
   const patients = new MemoryPatients();
   patients.rows.set("noor", { id: "noor", display_name: "Noor", pin_check: "x" });
   const deps = { storage: new MemoryStorage(), patients, transcriber: new FakeTranscriber(transcript), summarizer: new FakeSummarizer({ structure }) };
-  const input = { patientId: "noor", pin: "1234", sourceLang: "sw", audio: { bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/webm" } };
+  const input = { patientId: "noor", pin: "1234", sourceLang: "sw" as const, audio: { bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/webm" } };
   return { deps, input };
 }
 

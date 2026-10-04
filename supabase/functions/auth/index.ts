@@ -1,4 +1,4 @@
-// POST { action: "signup", id, pin, display_name? } | { action: "login", id, pin }
+// POST { action: "signup", id, pin, display_name? } | { action: "login", id, pin }   (id = numeric patient number)
 // No sessions: the UI keeps the id in local state and sends it with each call.
 import { ValidationError } from "../_shared/domain/errors.ts";
 import { makeDeps } from "../_shared/infra/container.ts";

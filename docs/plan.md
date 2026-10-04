@@ -6,11 +6,25 @@ Read this fully before writing code. Work in the order given in "Build order". K
 
 A phone-accessible medical ledger for a patient with a basic phone (persona: Noor, rural Ondera, Swahili speaker).
 
-- **Flow 1, patient logs a symptom:** audio clip (Swahili) -> Whisper (transcribe + translate to English) -> small LLM structures it into JSON -> stored in Supabase.
-- **Flow 2, doctor retrieves history:** doctor requests history for a patient -> entries read from Supabase -> LLM writes a short SMS-length summary in the doctor's language.
-- **Flow 3, doctor sends diagnosis/prescription:** doctor types *or* speaks (audio clip, same Whisper pipeline as flow 1) a diagnosis or prescription -> translated -> stored as an `events` row (`doctor_diagnosis` or `doctor_prescription`) -> shown on the patient's phone as a message. No SMS-length constraint on this one; the doctor's text/speech is passed through in full.
+It works like a **phone call from any throwaway basic phone**, not a smartphone app. Patient and doctor use the same call (often the patient's phone, handed to the doctor). The call goes:
 
-English is the pivot language in the database. All translation happens at the edges.
+1. "For Swahili press 1, for English press 2."
+2. Enter the patient number, then `#`.
+3. Enter the PIN, then `#`. (Unknown number: press 1 to register with this PIN.)
+4. "If you are the patient press 1, if you are the doctor press 2."
+
+There is no doctor login. The doctor gets access to a patient's record by being given the patient number and PIN, which is the patient's consent.
+
+- **Flow 1, patient logs a symptom:** the patient speaks -> Whisper (to English) -> small LLM structures it into JSON -> stored in Supabase.
+- **Flow 2, doctor retrieves history:** doctor presses 1 -> entries read from Supabase -> the LLM writes a short summary (about 20 seconds when read aloud) in the call language.
+- **Flow 3, doctor records diagnosis/prescription:** the doctor *speaks* it (a keypad call has no typing) -> Whisper -> the English transcript is stored as an `events` row (`doctor_diagnosis`, `doctor_prescription`, or a `symptom_log` consult note). When the patient later presses "hear messages", it is translated into that call's language and played back. No length cap: the doctor's speech is passed through in full.
+
+**Storage language is always English.** The language chosen at the start of the call never changes what is stored. It only selects which models do the translation at the edges:
+
+- English call: Whisper *transcribes*, and no output translation is needed.
+- Swahili call: Whisper *translates* speech into English, and the LLM writes output in Swahili.
+
+The per-language model table lives in one infra file.
 
 ## 2. Hard rules (do not violate)
 
@@ -41,7 +55,7 @@ This keeps the hard rules in section 2 (never diagnose, always flag `needs_revie
 
 ```
 /src                                phone simulator UI
-  /components                       PhoneFrame, SmsBubble, LoginScreen, PatientPhone, DoctorPhone
+  /components                       BasicPhone (keypad call), AudioPicker
 /supabase
   /migrations                       SQL files, ordered: patients, events
   /functions
@@ -51,8 +65,8 @@ This keeps the hard rules in section 2 (never diagnose, always flag `needs_revie
       ports.ts                      Storage, Transcriber, Summarizer interfaces (no implementations)
     /use-cases
       ingest.ts                     flow 1: audio -> transcript -> structured symptom_log -> store
-      retrieve.ts                   flow 2: patient id -> SMS-length summary in target_lang
-      log-instruction.ts            flow 3: doctor text/audio -> diagnosis/prescription event -> store
+      retrieve.ts                   flow 2: patient id -> short spoken summary in call_lang
+      log-instruction.ts            flow 3: doctor audio -> English diagnosis/prescription event -> store
       auth.ts                       signup + login check (ID + PIN)
     /infra
       supabase-storage.ts           Storage port implementation (Plain, later Encrypted)
@@ -191,20 +205,23 @@ The `pin` parameter here is only ever used as key material for encrypting/decryp
 
 Each function validates input, calls `storage`, returns JSON, and handles errors (see section 9).
 
-- **`ingest`:** input `{ patient_id, pin, audio, source_lang }` (default `sw`). Transcribe + translate to English with Whisper, discard audio, structure with the LLM (prompt rules in section 2) into a `symptom_log` event (`reported_by: 'patient'`), compute `needs_review`, store.
-- **`retrieve`:** input `{ patient_id, pin, target_lang }`. Load all `events` for the patient, then one LLM call that summarizes and writes in `target_lang`. Output must be SMS-length (readable in about 20 seconds), only report what was logged, mark any `needs_review` entries as unconfirmed. Empty history returns "No entries yet".
-- **`log-instruction`:** input `{ patient_id, pin, source_lang, type, text }` OR `{ patient_id, pin, source_lang, type, audio }` where `type` is `doctor_diagnosis` or `doctor_prescription` (or `symptom_log` with `reported_by: 'doctor'` for a consult recap). If `audio`, transcribe with Whisper first (same as `ingest`, discard audio right after) to get the doctor's text. Translate to English (stored) and to the patient's language (shown). The doctor's text/speech is passed through verbatim in meaning, no SMS-length cap; the model must not add medical advice.
-- **`auth`:** **not wired in yet for this build** — the `PinCrypto` port (section 6) is defined so it's ready to plug in, but for now the demo skips real auth: `signup` creates `{id, display_name}` and stores a `pin_check` via `NoOpPinCrypto`, `login` just checks the ID exists. No sessions: the UI holds the id in local state and sends it with each call. Wire up real PIN verification later if time allows.
+- All functions take `call_lang` (`sw` | `en`), which only picks models. Nothing is stored in it except `source_lang` as metadata.
+- **`ingest`:** input `{ patient_id, pin, call_lang, audio }`. Transcribe + translate to English with Whisper, discard audio, structure with the LLM (prompt rules in section 2) into a `symptom_log` event (`reported_by: 'patient'`), compute `needs_review`, store.
+- **`retrieve`:** input `{ patient_id, pin, call_lang }`. Load all `events` for the patient, then one LLM call that summarizes and writes in `call_lang`. Output must be short (about 20 seconds read aloud), only report what was logged, mark any `needs_review` entries as unconfirmed. Empty history returns "No entries yet".
+- **`log-instruction`:** input `{ patient_id, pin, call_lang, type, audio }` where `type` is `doctor_diagnosis` or `doctor_prescription` (or `symptom_log` with `reported_by: 'doctor'` for a consult note). Whisper turns the audio into English (same as `ingest`, audio discarded right after). The English transcript is stored as-is, with no LLM rewording and no length cap.
+- **`inbox`:** input `{ patient_id, pin, call_lang }`. Returns doctor messages translated from the stored English into `call_lang` at playback. If the translation is low-confidence, fails, or changes any number (doses, dates), the message is not played: it says "unclear, ask a person" instead.
+- **`auth`:** **not wired in yet for this build** — the `PinCrypto` port (section 6) is defined so it's ready to plug in, but for now the demo skips real auth: `signup` creates `{id}` (numeric patient number, typed on a keypad) and stores a `pin_check` via `NoOpPinCrypto`, `login` just checks the ID exists. No sessions: the call holds the number and PIN until hang-up. Wire up real PIN verification later if time allows.
 
-## 9. Frontend (phone simulator)
+## 9. Frontend (call simulator)
 
-Two phone-shaped frames side by side: patient phone and doctor phone.
+One basic phone: a small screen, a keypad (`0-9 * #`), and call / hang-up buttons. It simulates a voice call, not an app.
 
-- **Login/signup screen** (ID + PIN) on both.
-- **Patient phone:** buttons to pick a pre-recorded Swahili clip (or record if trivial), a "Send" action, and SMS-style bubbles showing responses and doctor instructions. Language name ("Swahili") visible on screen.
-- **Doctor phone:** patient ID field + PIN, "Retrieve history" button showing the summary (flow 2, still SMS-length), and either a text field or a "speak" option (audio clip) to send a diagnosis/prescription (flow 3, no length cap).
-- Render flow 2's summary and `needs_review` flags as SMS-style bubbles ("Unclear, ask a person"). Flow 3's diagnosis/prescription message to the patient is shown as a message bubble but not length-constrained.
-- Keep the "call" as a button press. No ringing or audio playback unless trivial.
+- **Menu:** language (1 Swahili, 2 English) -> patient number `#` -> PIN `#` -> role (1 patient, 2 doctor). Prompts are shown as "🔊" lines, with optional browser text-to-speech.
+- **Patient menu:** 1 record a symptom (speak), 2 hear doctor messages.
+- **Doctor menu:** 1 hear history, 2 record diagnosis, 3 record prescription, 4 record consultation note.
+- "Speaking" = recording from the mic or picking a pre-recorded demo clip. `*` goes back.
+- `needs_review` items are said as "Unclear, ask a person". For the doctor, the English transcript of unclear entries is shown on screen.
+- Hanging up wipes all state on the phone.
 
 ## 10. Errors, empty states, seed data
 
@@ -219,14 +236,14 @@ Two phone-shaped frames side by side: patient phone and doctor phone.
 2. Domain layer: `types.ts`, `needs-review.ts`, `ports.ts`. Infra: `supabase-storage.ts` (PlainStorage implementing the `Storage` port).
 3. Use case `ingest.ts` + infra (`groq-transcriber.ts`, `groq-summarizer.ts`) + Deno handler, end to end with a hardcoded test clip. Verify JSON output and the `needs_review` path with one deliberately bad clip.
 4. Use case `retrieve.ts` + Deno handler, with seed data.
-5. Phone UI with login, patient and doctor screens.
-6. Use case `log-instruction.ts` (text + audio input) + Deno handler + its UI.
+5. Call simulator UI (keypad menu: language, number, PIN, role).
+6. Use case `log-instruction.ts` (audio) + `inbox` playback + Deno handlers + their menu entries.
 7. Error handling and empty states.
 8. Stretch only if time remains: `EncryptedStorage`, one-time share code (missed call -> code with expiry), real telephony.
 
 ## 12. Demo-readiness checklist
 
-- Whole loop works from a fresh account: signup, log a symptom, doctor retrieves, doctor sends instruction, patient sees it.
+- Whole loop works from a fresh number over the call menu: register, log a symptom, doctor retrieves, doctor records a prescription, patient hears it.
 - One clip that triggers `needs_review` is ready to show the fail-safe.
 - No audio persisted anywhere (check the code path).
 - No secrets in the repo.

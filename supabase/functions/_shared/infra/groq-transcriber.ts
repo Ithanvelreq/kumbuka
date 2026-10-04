@@ -1,8 +1,9 @@
-// Transcriber port via Groq Whisper (translations endpoint: any language -> English).
-// Audio exists only in memory for the duration of the request; nothing is written anywhere.
+// Transcriber port via Groq Whisper. English calls use plain transcription; other languages use the
+// translations endpoint (speech -> English). Audio exists only in memory for the request; nothing is written.
 import type { AudioInput, Transcriber } from "../domain/ports.ts";
-import type { Transcript } from "../domain/types.ts";
-import { groqFetch, WHISPER_MODEL } from "./groq-http.ts";
+import type { CallLang, Transcript } from "../domain/types.ts";
+import { groqFetch } from "./groq-http.ts";
+import { LANG_MODELS } from "./languages.ts";
 
 interface VerboseJson {
   text?: string;
@@ -15,15 +16,17 @@ const EXT: Record<string, string> = {
 };
 
 export class GroqTranscriber implements Transcriber {
-  async translateToEnglish(audio: AudioInput, _sourceLang: string): Promise<Transcript> {
-    // The translations endpoint auto-detects the source language; sourceLang is kept for the port contract.
+  async translateToEnglish(audio: AudioInput, callLang: CallLang): Promise<Transcript> {
+    const { whisperMode, whisperModel } = LANG_MODELS[callLang];
     const mime = audio.mimeType.split(";")[0];
-    const res = (await groqFetch("/audio/translations", () => {
+    const path = whisperMode === "transcribe" ? "/audio/transcriptions" : "/audio/translations";
+    const res = (await groqFetch(path, () => {
       const form = new FormData();
       form.append("file", new Blob([audio.bytes], { type: mime }), `clip.${EXT[mime] ?? "webm"}`);
-      form.append("model", WHISPER_MODEL);
+      form.append("model", whisperModel);
       form.append("response_format", "verbose_json");
       form.append("temperature", "0");
+      if (whisperMode === "transcribe") form.append("language", "en");
       return form;
     })) as VerboseJson;
 

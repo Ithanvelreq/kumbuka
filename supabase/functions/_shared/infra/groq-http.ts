@@ -49,11 +49,11 @@ export async function groqFetch(path: string, makeBody: () => BodyInit, contentT
   throw new ServiceBusyError();
 }
 
-export async function groqChatJson(system: string, user: string): Promise<unknown> {
+export async function groqChatJson(system: string, user: string, model = LLM_MODEL): Promise<unknown> {
   const res = (await groqFetch(
     "/chat/completions",
     () => JSON.stringify({
-      model: LLM_MODEL,
+      model,
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
