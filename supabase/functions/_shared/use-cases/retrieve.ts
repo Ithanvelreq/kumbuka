@@ -1,7 +1,7 @@
-// Flow 2: patient id -> all events -> one SMS-length summary in the doctor's language.
+// Flow 2: patient id -> all (English) events -> one short summary in the call language, read to the doctor.
 import { NotFoundError, ServiceBusyError } from "../domain/errors.ts";
 import type { PatientStore, Storage, Summarizer } from "../domain/ports.ts";
-import { type Event, UNCLEAR_LABEL } from "../domain/types.ts";
+import { type CallLang, type Event, UNCLEAR_LABEL } from "../domain/types.ts";
 
 /** ~20 seconds of reading. Longer model output is cut at a word boundary. */
 export const SMS_MAX_CHARS = 320;
@@ -10,7 +10,7 @@ export const EMPTY_HISTORY = "No entries yet";
 export interface RetrieveInput {
   patientId: string;
   pin: string;
-  targetLang: string;
+  targetLang: CallLang;
 }
 
 export interface RetrieveDeps {
@@ -33,6 +33,8 @@ export interface EntryView {
 
 export interface RetrieveResult {
   summary: string;
+  /** True when there are no entries; the client says "No entries yet" in the call language. */
+  empty: boolean;
   /** True when the LLM failed and we fell back to a plain English list. */
   fallback: boolean;
   entries: EntryView[];
@@ -43,15 +45,15 @@ export async function retrieve(input: RetrieveInput, deps: RetrieveDeps): Promis
 
   const events = await deps.storage.retrieve(input.patientId, input.pin);
   const entries = events.map(toView);
-  if (events.length === 0) return { summary: EMPTY_HISTORY, fallback: false, entries };
+  if (events.length === 0) return { summary: EMPTY_HISTORY, empty: true, fallback: false, entries };
 
   try {
     const summary = (await deps.summarizer.summarizeHistory(events, input.targetLang)).trim();
     if (summary === "") throw new Error("empty summary");
-    return { summary: clampSms(summary), fallback: false, entries };
+    return { summary: clampSms(summary), empty: false, fallback: false, entries };
   } catch (err) {
     if (err instanceof ServiceBusyError) throw err;
-    return { summary: clampSms(fallbackSummary(entries)), fallback: true, entries };
+    return { summary: clampSms(fallbackSummary(entries)), empty: false, fallback: true, entries };
   }
 }
 

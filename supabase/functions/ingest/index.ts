@@ -1,6 +1,6 @@
-// POST { patient_id, pin, source_lang?, audio: { base64, mime_type } }
+// POST { patient_id, pin, call_lang: "sw" | "en", audio: { base64, mime_type } }
 import { makeDeps } from "../_shared/infra/container.ts";
-import { handler, optionalString, parseAudio, requireString } from "../_shared/infra/http.ts";
+import { handler, parseAudio, requireCallLang, requireString } from "../_shared/infra/http.ts";
 import { ingest } from "../_shared/use-cases/ingest.ts";
 
 Deno.serve(handler(async (body) => {
@@ -8,7 +8,7 @@ Deno.serve(handler(async (body) => {
     {
       patientId: requireString(body, "patient_id"),
       pin: requireString(body, "pin"),
-      sourceLang: optionalString(body, "source_lang", "sw"),
+      sourceLang: requireCallLang(body),
       audio: parseAudio(body),
     },
     makeDeps(),

@@ -1,15 +1,15 @@
-// Flow 1: patient audio -> English transcript -> structured symptom_log -> needs_review -> store.
+// Flow 1: patient audio (call language) -> English transcript -> structured symptom_log -> needs_review -> store.
 import { NotFoundError, ServiceBusyError, ValidationError } from "../domain/errors.ts";
 import { decideNeedsReview } from "../domain/needs-review.ts";
 import type { AudioInput, PatientStore, Storage, Summarizer, Transcriber } from "../domain/ports.ts";
 import { coerceCore, validateContent } from "../domain/schema.ts";
-import type { Event, SymptomLogContent } from "../domain/types.ts";
+import type { CallLang, Event, SymptomLogContent } from "../domain/types.ts";
 
 export interface IngestInput {
   patientId: string;
   pin: string;
   audio: AudioInput;
-  sourceLang: string;
+  sourceLang: CallLang;
 }
 
 export interface IngestDeps {

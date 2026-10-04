@@ -19,21 +19,21 @@ async function setup(summary?: string | Error) {
   return { deps: { storage, patients, summarizer }, storage, summarizer };
 }
 
-const input = { patientId: "noor", pin: "1", targetLang: "fr" };
+const input = { patientId: "noor", pin: "1", targetLang: "sw" as const };
 
 test("empty history says so without calling the LLM", async () => {
   const { deps, summarizer } = await setup();
-  assert.deepEqual(await retrieve(input, deps), { summary: EMPTY_HISTORY, fallback: false, entries: [] });
+  assert.deepEqual(await retrieve(input, deps), { summary: EMPTY_HISTORY, empty: true, fallback: false, entries: [] });
   assert.equal(summarizer.calls.length, 0);
 });
 
-test("summary is produced in target language and entries carry the unclear label", async () => {
-  const { deps, storage, summarizer } = await setup("Maux de tête 3 jours. Fièvre (non confirmé).");
+test("summary is produced in the call language and entries carry the unclear label", async () => {
+  const { deps, storage, summarizer } = await setup("Kichwa kinauma siku 3. Homa (haijathibitishwa).");
   await storage.store("noor", { type: "symptom_log", content: log("Headache"), source_lang: "sw" });
   await storage.store("noor", { type: "symptom_log", content: log("stomach?", true), source_lang: "sw" });
   const r = await retrieve(input, deps);
   assert.equal(r.fallback, false);
-  assert.equal(summarizer.calls[0].args[1], "fr");
+  assert.equal(summarizer.calls[0].args[1], "sw");
   assert.equal(r.entries[1].label, "Unclear, ask a person");
   assert.equal(r.entries[1].transcript_en, "raw: stomach?");
   assert.equal(r.entries[0].label, null);

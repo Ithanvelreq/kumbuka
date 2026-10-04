@@ -1,6 +1,6 @@
 // In-memory port fakes for use-case tests.
-import type { InstructionTranslation, PatientStore, Storage, Summarizer, Transcriber } from "../supabase/functions/_shared/domain/ports.ts";
-import type { Event, NewEvent, Patient, Transcript } from "../supabase/functions/_shared/domain/types.ts";
+import type { PatientStore, Storage, Summarizer, Transcriber, Translation } from "../supabase/functions/_shared/domain/ports.ts";
+import type { CallLang, Event, NewEvent, Patient, Transcript } from "../supabase/functions/_shared/domain/types.ts";
 
 export class MemoryStorage implements Storage {
   events: Event[] = [];
@@ -41,7 +41,7 @@ export class FakeTranscriber implements Transcriber {
 
 export class FakeSummarizer implements Summarizer {
   calls: { method: string; args: unknown[] }[] = [];
-  responses: { structure?: unknown; summary?: string; translation?: InstructionTranslation | Error };
+  responses: { structure?: unknown; summary?: string; translation?: Translation | Error };
   constructor(responses: FakeSummarizer["responses"] = {}) {
     this.responses = responses;
   }
@@ -51,14 +51,14 @@ export class FakeSummarizer implements Summarizer {
     if (r instanceof Error) throw r;
     return r;
   }
-  async summarizeHistory(events: Event[], lang: string) {
+  async summarizeHistory(events: Event[], lang: CallLang) {
     this.calls.push({ method: "summarizeHistory", args: [events, lang] });
     return this.responses.summary ?? "summary";
   }
-  async translateInstruction(text: string, src: string, dst: string) {
-    this.calls.push({ method: "translateInstruction", args: [text, src, dst] });
+  async fromEnglish(text: string, lang: CallLang) {
+    this.calls.push({ method: "fromEnglish", args: [text, lang] });
     const r = this.responses.translation;
     if (r instanceof Error) throw r;
-    return r ?? { text_en: text, text_patient: text, confidence: "high" as const };
+    return r ?? { text, confidence: "high" as const };
   }
 }

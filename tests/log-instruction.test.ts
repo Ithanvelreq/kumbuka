@@ -2,89 +2,101 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { numbersPreserved } from "../supabase/functions/_shared/domain/needs-review.ts";
 import { ServiceBusyError } from "../supabase/functions/_shared/domain/errors.ts";
-import type { InstructionTranslation } from "../supabase/functions/_shared/domain/ports.ts";
 import { inbox } from "../supabase/functions/_shared/use-cases/inbox.ts";
 import { logInstruction } from "../supabase/functions/_shared/use-cases/log-instruction.ts";
 import { FakeSummarizer, FakeTranscriber, MemoryPatients, MemoryStorage } from "./fakes.ts";
 
 const RX = "Paracetamol 500 mg twice a day for 3 days.";
 const RX_SW = "Paracetamol 500 mg mara mbili kwa siku kwa siku 3.";
+const clean = { text_en: RX, segments: [{ avg_logprob: -0.1, no_speech_prob: 0.01 }] };
 
-function setup(translation?: InstructionTranslation | Error, transcript = { text_en: RX, segments: [{ avg_logprob: -0.1, no_speech_prob: 0.01 }] }) {
+function setup(transcript = clean) {
   const patients = new MemoryPatients();
-  patients.rows.set("noor", { id: "noor", display_name: null, pin_check: null });
-  const deps = {
+  patients.rows.set("1001", { id: "1001", display_name: null, pin_check: null });
+  return {
     storage: new MemoryStorage(), patients,
     transcriber: new FakeTranscriber(transcript),
-    summarizer: new FakeSummarizer({ translation: translation ?? { text_en: RX, text_patient: RX_SW, confidence: "high" } }),
+    summarizer: new FakeSummarizer({ translation: { text: RX_SW, confidence: "high" } }),
   };
-  return deps;
 }
-const base = { patientId: "noor", pin: "1", type: "doctor_prescription" as const, sourceLang: "en", patientLang: "sw" };
+const audio = () => ({ bytes: new Uint8Array([9, 9]), mimeType: "audio/webm" });
+const base = { patientId: "1001", pin: "1234", type: "doctor_prescription" as const, callLang: "sw" as const };
 
-test("typed prescription is stored in English with the patient-language text, uncapped", async () => {
+test("spoken prescription is stored as the English transcript, unchanged, audio wiped", async () => {
   const deps = setup();
-  const e = await logInstruction({ ...base, text: RX }, deps);
+  const a = audio();
+  const e = await logInstruction({ ...base, audio: a }, deps);
+  assert.deepEqual([...a.bytes], [0, 0]);
   assert.equal(e.type, "doctor_prescription");
   assert.equal(e.content.note_en, RX);
   assert.equal(e.content.needs_review, false);
-  assert.equal(e.content.details.text_patient, RX_SW);
-  assert.equal(e.content.details.original_text, RX);
-  assert.deepEqual(deps.summarizer.calls[0].args, [RX, "en", "sw"]);
+  assert.equal(e.source_lang, "sw");
+  assert.equal(deps.summarizer.calls.length, 0, "no LLM in this flow");
 });
 
-test("audio is transcribed, wiped, then translated from English", async () => {
-  const deps = setup();
-  const audio = { bytes: new Uint8Array([9, 9]), mimeType: "audio/webm" };
-  const e = await logInstruction({ ...base, sourceLang: "fr", audio }, deps);
-  assert.deepEqual([...audio.bytes], [0, 0]);
-  assert.equal(e.source_lang, "en");
-  assert.equal(e.content.details.input, "audio");
-  assert.equal(deps.summarizer.calls[0].args[1], "en");
-});
-
-test("changed dose numbers force review", async () => {
-  const deps = setup({ text_en: RX, text_patient: "Paracetamol 50 mg mara mbili kwa siku 3.", confidence: "high" });
-  const e = await logInstruction({ ...base, text: RX }, deps);
+test("noisy doctor audio is flagged", async () => {
+  const deps = setup({ text_en: "uh", segments: [{ avg_logprob: -1.5, no_speech_prob: 0.7 }] });
+  const e = await logInstruction({ ...base, audio: audio() }, deps);
   assert.equal(e.content.needs_review, true);
-  assert.match(e.content.review_reason!, /Numbers differ/);
+  assert.equal(e.content.confidence, "low");
 });
 
-test("translation failure is stored as unclear, never guessed", async () => {
-  const deps = setup(new SyntaxError("bad json"));
-  const e = await logInstruction({ ...base, sourceLang: "fr", text: "Prendre du repos pendant deux jours" }, deps);
-  assert.equal(e.content.needs_review, true);
-  assert.equal(e.content.note_en, "");
-  assert.equal(e.content.details.text_patient, "");
-});
-
-test("consult recap is a doctor-reported symptom_log", async () => {
-  const deps = setup({ text_en: "Patient reports headache for 3 days.", text_patient: "Kichwa kinauma siku 3.", confidence: "high" });
-  const e = await logInstruction({ ...base, type: "symptom_log", text: "Patient reports headache for 3 days." }, deps);
-  assert.equal(e.type, "symptom_log");
+test("consult note is a doctor-reported symptom_log", async () => {
+  const deps = setup({ text_en: "Patient reports headache for 3 days.", segments: clean.segments });
+  const e = await logInstruction({ ...base, type: "symptom_log", audio: audio() }, deps);
   assert.equal(e.type === "symptom_log" && e.content.reported_by, "doctor");
 });
 
-test("exactly one of text or audio", async () => {
-  const deps = setup();
-  await assert.rejects(logInstruction({ ...base }, deps), /exactly one/);
-  await assert.rejects(logInstruction({ ...base, text: "x", audio: { bytes: new Uint8Array(1), mimeType: "audio/webm" } }, deps), /exactly one/);
+test("unknown patient is rejected", async () => {
+  await assert.rejects(logInstruction({ ...base, patientId: "9999", audio: audio() }, setup()), /Unknown patient/);
 });
 
-test("busy propagates and nothing is stored", async () => {
-  const deps = setup(new ServiceBusyError());
-  await assert.rejects(logInstruction({ ...base, text: RX }, deps), ServiceBusyError);
-  assert.equal(deps.storage.events.length, 0);
+async function withMessages() {
+  const deps = setup();
+  await logInstruction({ ...base, audio: audio() }, deps);
+  await deps.storage.store("1001", { type: "symptom_log", content: { reported_by: "patient", note_en: "x", confidence: "high", needs_review: false, review_reason: null, details: {} }, source_lang: "sw" });
+  return deps;
+}
+
+test("inbox translates stored English into the call language at playback", async () => {
+  const deps = await withMessages();
+  const msgs = await inbox({ patientId: "1001", pin: "1234", callLang: "sw" }, deps);
+  assert.deepEqual(msgs.map((m) => [m.type, m.text, m.needs_review]), [["doctor_prescription", RX_SW, false]]);
+  assert.deepEqual(deps.summarizer.calls[0].args, [RX, "sw"]);
 });
 
-test("inbox shows doctor messages in patient language, flagged ones as unclear", async () => {
-  const deps = setup();
-  await logInstruction({ ...base, text: RX }, deps);
-  deps.summarizer.responses.translation = { text_en: RX, text_patient: "garbled", confidence: "low" };
-  await logInstruction({ ...base, type: "doctor_diagnosis", text: RX }, deps);
-  await deps.storage.store("noor", { type: "symptom_log", content: { reported_by: "patient", note_en: "x", confidence: "high", needs_review: false, review_reason: null, details: {} }, source_lang: "sw" });
-  const msgs = await inbox({ patientId: "noor", pin: "1" }, deps);
-  assert.deepEqual(msgs.map((m) => [m.type, m.text]), [["doctor_prescription", RX_SW], ["doctor_diagnosis", "Unclear, ask a person"]]);
+test("inbox in English plays the stored text without any LLM", async () => {
+  const deps = await withMessages();
+  const msgs = await inbox({ patientId: "1001", pin: "1234", callLang: "en" }, deps);
+  assert.equal(msgs[0].text, RX);
+  assert.equal(deps.summarizer.calls.length, 0);
+});
+
+test("inbox withholds translations with changed numbers, low confidence, or failures", async () => {
+  for (const translation of [
+    { text: "Paracetamol 50 mg mara mbili kwa siku 3.", confidence: "high" as const },
+    { text: RX_SW, confidence: "low" as const },
+    new SyntaxError("bad json"),
+  ]) {
+    const deps = await withMessages();
+    deps.summarizer.responses.translation = translation;
+    const [m] = await inbox({ patientId: "1001", pin: "1234", callLang: "sw" }, deps);
+    assert.deepEqual([m.text, m.needs_review], [null, true]);
+  }
+});
+
+test("inbox never plays flagged messages", async () => {
+  const deps = setup({ text_en: "uh", segments: [{ avg_logprob: -1.5, no_speech_prob: 0.7 }] });
+  await logInstruction({ ...base, audio: audio() }, deps);
+  const [m] = await inbox({ patientId: "1001", pin: "1234", callLang: "sw" }, deps);
+  assert.deepEqual([m.text, m.needs_review], [null, true]);
+  assert.equal(deps.summarizer.calls.length, 0);
+});
+
+test("inbox propagates busy", async () => {
+  const deps = await withMessages();
+  deps.summarizer.responses.translation = new ServiceBusyError();
+  await assert.rejects(inbox({ patientId: "1001", pin: "1234", callLang: "sw" }, deps), ServiceBusyError);
 });
 
 test("numbersPreserved", () => {

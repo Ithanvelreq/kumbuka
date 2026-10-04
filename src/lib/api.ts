@@ -6,7 +6,7 @@ export const BUSY = "Service busy, try again";
 // Stay above that so we don't report "busy" for a request that then succeeds, but never hang forever.
 const CLIENT_TIMEOUT_MS = 90_000;
 
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; message: string };
+export type ApiResult<T> = { ok: true; data: T } | { ok: false; message: string; status?: number };
 
 export interface AudioPayload {
   base64: string;
@@ -46,7 +46,7 @@ async function call<T>(fn: string, body: Record<string, unknown>): Promise<ApiRe
       const res = error.context as Response;
       const payload = await res.json().catch(() => null);
       if (res.status === 503 || res.status === 429) return { ok: false, message: BUSY };
-      return { ok: false, message: payload?.message ?? "Something went wrong" };
+      return { ok: false, message: payload?.message ?? "Something went wrong", status: res.status };
     }
     if (error instanceof FunctionsFetchError || error instanceof FunctionsRelayError) return { ok: false, message: BUSY };
     return { ok: false, message: BUSY };
@@ -55,31 +55,35 @@ async function call<T>(fn: string, body: Record<string, unknown>): Promise<ApiRe
   }
 }
 
+export type CallLang = "sw" | "en";
 export type InstructionType = "doctor_diagnosis" | "doctor_prescription" | "symptom_log";
 
 export interface InboxMessage {
   id: string;
   type: "doctor_diagnosis" | "doctor_prescription";
   created_at: string;
-  text: string;
+  /** Already in the call language; null = must not be played ("unclear, ask a person"). */
+  text: string | null;
   needs_review: boolean;
 }
 
+export interface RetrieveResult {
+  summary: string;
+  empty: boolean;
+  fallback: boolean;
+  entries: EntryView[];
+}
+
+// Every call sends `call_lang`: it only picks the translation models. Storage is always English.
 export const api = {
-  signup: (id: string, pin: string, display_name: string) =>
-    call<{ patient: Patient }>("auth", { action: "signup", id, pin, display_name }),
+  signup: (id: string, pin: string) => call<{ patient: Patient }>("auth", { action: "signup", id, pin }),
   login: (id: string, pin: string) => call<{ patient: Patient }>("auth", { action: "login", id, pin }),
-  ingest: (patient_id: string, pin: string, audio: AudioPayload, source_lang = "sw") =>
-    call<{ event: StoredEvent }>("ingest", { patient_id, pin, audio, source_lang }),
-  retrieve: (patient_id: string, pin: string, target_lang: string) =>
-    call<{ summary: string; fallback: boolean; entries: EntryView[] }>("retrieve", { patient_id, pin, target_lang }),
-  logInstruction: (
-    patient_id: string,
-    pin: string,
-    type: InstructionType,
-    source_lang: string,
-    input: { text: string } | { audio: AudioPayload },
-    patient_lang = "sw",
-  ) => call<{ event: StoredEvent }>("log-instruction", { patient_id, pin, type, source_lang, patient_lang, ...input }),
-  inbox: (patient_id: string, pin: string) => call<{ messages: InboxMessage[] }>("inbox", { patient_id, pin }),
+  ingest: (patient_id: string, pin: string, call_lang: CallLang, audio: AudioPayload) =>
+    call<{ event: StoredEvent }>("ingest", { patient_id, pin, call_lang, audio }),
+  retrieve: (patient_id: string, pin: string, call_lang: CallLang) =>
+    call<RetrieveResult>("retrieve", { patient_id, pin, call_lang }),
+  logInstruction: (patient_id: string, pin: string, call_lang: CallLang, type: InstructionType, audio: AudioPayload) =>
+    call<{ event: StoredEvent }>("log-instruction", { patient_id, pin, call_lang, type, audio }),
+  inbox: (patient_id: string, pin: string, call_lang: CallLang) =>
+    call<{ messages: InboxMessage[] }>("inbox", { patient_id, pin, call_lang }),
 };

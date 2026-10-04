@@ -12,11 +12,12 @@ export interface PublicPatient {
   display_name: string | null;
 }
 
-const ID_RE = /^[a-z0-9-]{3,32}$/;
+// Typed on a phone keypad, so the patient number is digits only.
+const ID_RE = /^\d{3,15}$/;
 const PIN_RE = /^\d{4,6}$/;
 
 function checkCredentials(id: string, pin: string) {
-  if (!ID_RE.test(id)) throw new ValidationError("ID must be 3-32 chars: lowercase letters, digits, dashes");
+  if (!ID_RE.test(id)) throw new ValidationError("Patient number must be 3-15 digits");
   if (!PIN_RE.test(pin)) throw new ValidationError("PIN must be 4-6 digits");
 }
 

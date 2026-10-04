@@ -3,11 +3,22 @@
 A phone-accessible medical ledger for patients with basic phones. Persona: Noor, rural Ondera, Swahili speaker.
 Full plan: [`docs/plan.md`](docs/plan.md).
 
-- **Flow 1 – patient logs a symptom:** Swahili audio → Whisper (translate to English) → small LLM structures it → `symptom_log` event.
-- **Flow 2 – doctor retrieves history:** all events → one LLM call → SMS-length summary in the doctor's language.
-- **Flow 3 – doctor sends diagnosis/prescription:** typed or spoken → translated to English (stored) and Swahili (shown on the patient's phone), passed through in full.
+It's a **phone call from any throwaway basic phone**, not an app. The keypad menu goes:
 
-English is the pivot language in the database. Translation only happens at the edges.
+> "Kwa Kiswahili bonyeza 1. For English press 2." → patient number `#` → PIN `#` → "patient press 1, doctor press 2"
+
+There's no doctor login. The doctor uses the same call with the patient's number and PIN (the patient's consent).
+
+- **Flow 1 – patient records a symptom:** speech → Whisper → English → small LLM structures it → `symptom_log` event.
+- **Flow 2 – doctor hears the history:** all events → one LLM call → a short summary read out in the call language.
+- **Flow 3 – doctor records a diagnosis/prescription:** speech → Whisper → the **English transcript is stored as-is** (no LLM rewording). The patient hears it later, translated into their call language.
+
+**Storage is always English.** The language picked at the start of the call only selects which models translate at the edges ([`languages.ts`](supabase/functions/_shared/infra/languages.ts)):
+
+| Call language | Speech in | Speech/text out |
+|---|---|---|
+| English (2) | Whisper *transcription* | as stored, no LLM |
+| Swahili (1) | Whisper *translation* → English | LLM writes Swahili (`GROQ_LLM_MODEL_SW` overridable) |
 
 ## What is live vs. planned (read this)
 
@@ -16,8 +27,8 @@ English is the pivot language in the database. Translation only happens at the e
 | Inference | **Cloud**: Groq API (`whisper-large-v3`, `llama-3.1-8b-instant`) | **Local** on a mini-PC: Whisper small + a small open LLM with a commercial license, on CPU |
 | PIN login check | **Stub** (`NoOpPinCrypto`): any PIN is accepted, login only checks the ID exists | `pin_check` = ID encrypted with a PIN-derived key (PBKDF2/Argon2 + AES-GCM). The PIN is never stored |
 | Data at rest | **Plaintext** (`PlainStorage`) | `EncryptedStorage`: content encrypted with a PIN-derived key |
-| Doctor accounts | Not stored, local display name only | Real clinician accounts |
-| Delivery | Browser phone simulator, button presses | Basic-phone telephony/SMS, one-time share codes |
+| Doctor access | Patient number + PIN on the call, then "press 2" (no doctor identity) | Same, plus one-time share codes / clinician verification |
+| Delivery | Browser basic-phone simulator (keypad, on-screen prompts, optional browser TTS) | Real telephony (IVR) on any basic phone |
 
 Both stubs are swapped with **one line** in [`supabase/functions/_shared/infra/container.ts`](supabase/functions/_shared/infra/container.ts).
 
@@ -25,9 +36,11 @@ Both stubs are swapped with **one line** in [`supabase/functions/_shared/infra/c
 
 - The AI never diagnoses, prescribes, assesses severity, suggests causes or reassures. It only extracts or translates what was said. The rules are in every prompt ([`prompts.ts`](supabase/functions/_shared/infra/prompts.ts)).
 - Every AI output is a draft. Uncertain entries get `needs_review: true` and are shown as **"Unclear, ask a person"**, with the English transcript visible to the clinician. Rules ([`needs-review.ts`](supabase/functions/_shared/domain/needs-review.ts)):
-  low Whisper `avg_logprob` (< -0.8) or high `no_speech_prob` (> 0.5), LLM `confidence: "low"`, empty note or very short transcript, JSON parse/validation failure, and (for doctor messages) any number that changes in translation.
+  low Whisper `avg_logprob` (< -0.8) or high `no_speech_prob` (> 0.5), LLM `confidence: "low"`, empty note or very short transcript, JSON parse/validation failure.
+- Doctor messages are translated only at playback ([`inbox.ts`](supabase/functions/_shared/use-cases/inbox.ts)). If the translation is low-confidence, fails, or changes any number (doses, dates), the message is **not played**. The patient hears "unclear, ask a person".
 - **No audio is persisted.** Audio arrives as base64, is decoded in memory, sent to Whisper, and the buffer is zeroed right after transcription, even on failure. Nothing writes audio to disk, storage buckets or the DB.
 - Minimal data: the summary prompt only sees date, type, note and flag, never raw transcripts.
+- Prompt texts in Swahili ([`call-flow.ts`](src/lib/call-flow.ts)) still need review by a native speaker.
 - Every Groq call has a 15s timeout and one retry. 429/5xx/timeouts become HTTP 503, and the UI shows **"Service busy, try again"**.
 
 ## Architecture (hexagonal)
@@ -35,7 +48,7 @@ Both stubs are swapped with **one line** in [`supabase/functions/_shared/infra/c
 Import direction: **infra → use cases → domain**, never outward. `tests/architecture.test.ts` enforces this.
 
 ```
-src/                                   phone simulator (Vite + React + Tailwind)
+src/                                   basic-phone call simulator (Vite + React + Tailwind); menu logic in src/lib/call-flow.ts
 supabase/migrations/                   patients, events, synthetic seed (RLS on, no policies)
 supabase/functions/
   _shared/domain/                      pure: types, schema (content validation), needs-review, ports, errors
@@ -50,14 +63,15 @@ Shared code lives under `_shared/` (underscore = not deployed as a function, per
 ### API
 
 All functions are `POST` with a JSON body. Audio is `{ "base64": "...", "mime_type": "audio/webm" }`.
+`call_lang` is `"sw"` or `"en"`. It only picks models; storage is English.
 
 | Function | Body | Returns |
 |---|---|---|
-| `auth` | `{ action: "signup", id, pin, display_name? }` / `{ action: "login", id, pin }` | `{ patient }` |
-| `ingest` | `{ patient_id, pin, audio, source_lang? = "sw" }` | `{ event }` |
-| `retrieve` | `{ patient_id, pin, target_lang? = "en" }` | `{ summary, fallback, entries[] }` |
-| `log-instruction` | `{ patient_id, pin, type, source_lang?, patient_lang? = "sw", text \| audio }` | `{ event }` |
-| `inbox` | `{ patient_id, pin }` | `{ messages[] }` |
+| `auth` | `{ action: "signup" \| "login", id, pin }` (`id` = numeric patient number) | `{ patient }` |
+| `ingest` | `{ patient_id, pin, call_lang, audio }` | `{ event }` |
+| `retrieve` | `{ patient_id, pin, call_lang }` | `{ summary, empty, fallback, entries[] }` |
+| `log-instruction` | `{ patient_id, pin, call_lang, type, audio }` | `{ event }` |
+| `inbox` | `{ patient_id, pin, call_lang }` | `{ messages[] }` (text in `call_lang`, or `null` = unclear) |
 
 Errors: `400 invalid_input`, `404 not_found`, `503 service_busy`, `500 internal`.
 
@@ -66,7 +80,7 @@ Errors: `400 invalid_input`, `404 not_found`, `503 service_busy`, `500 internal`
 1. **Supabase / Lovable:** connect the project. Apply `supabase/migrations/*` in order: patients, events, then the synthetic seed.
 2. **Secrets** (Lovable secrets / `supabase secrets set`, never in the repo):
    - `GROQ_API_KEY` (required, free tier at console.groq.com)
-   - `GROQ_WHISPER_MODEL`, `GROQ_LLM_MODEL` (optional overrides; check Groq's live model list)
+   - `GROQ_WHISPER_MODEL`, `GROQ_LLM_MODEL`, `GROQ_WHISPER_MODEL_SW`, `GROQ_LLM_MODEL_SW` (optional overrides; check Groq's live model list)
    - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` are injected automatically into edge functions.
 3. **Deploy functions:** `supabase functions deploy ingest retrieve log-instruction inbox auth` (or let Lovable deploy them).
 4. **Frontend:**
@@ -90,15 +104,16 @@ The infra and handler files use Deno `npm:` imports, so `tsc` doesn't check them
 
 ## Demo script
 
-1. Patient phone: log in as `demo-noor` (synthetic) with any 4-digit PIN, or sign up a fresh ID.
-2. Patient: send a Swahili clip → "Imepokelewa ✓". Send `silence.wav` → "⚠ Unclear, ask a person".
-3. Doctor phone: log in (any name + PIN), enter the patient ID and PIN, pick a language → **Retrieve history** shows an SMS-length summary plus flagged entries with their transcripts.
-4. Doctor: send a prescription (typed or 🎤 spoken) → shows what the patient will see in Swahili.
-5. Patient: **📥 Ujumbe** shows the doctor's message in Swahili.
+Press 📞 to call. Use the on-screen keypad or your keyboard (Enter = `#`). Hang up (⏻) between roles.
+
+1. **Patient call:** `1` (Swahili) → `1001#` (synthetic demo patient) → any PIN `1234#` → `1` patient → `1` record a symptom → speak, or send a demo clip → "Imehifadhiwa". Do it again with `silence.wav` → "…haikueleweka vizuri. Mtu ataikagua." (the fail-safe).
+2. **Doctor call:** `2` (English) → `1001#` → `1234#` → `2` doctor → `1` hear history: a short English summary, plus the transcripts of unclear entries on screen. Then `3` → speak a prescription → "Saved."
+3. **Patient call again:** `1` → `1001#` → `1234#` → `1` → `2` hear messages → the prescription is read in Swahili.
+4. A fresh number (e.g. `2002#`) → "not registered, press 1 to register".
 
 ## Demo-readiness checklist
 
-- [ ] Whole loop from a fresh account: signup → log symptom → doctor retrieves → doctor sends instruction → patient sees it
+- [ ] Whole loop over the call menu from a fresh number: register → record symptom → doctor hears history → doctor records prescription → patient hears it
 - [x] One clip that triggers `needs_review` (`public/clips/silence.wav`)
 - [x] No audio persisted (in-memory only, buffer zeroed after transcription; see `ingest.ts`, `log-instruction.ts`)
 - [x] No secrets in the repo (`.env*` ignored; keys via Lovable/Supabase secrets)
@@ -107,4 +122,4 @@ The infra and handler files use Deno `npm:` imports, so `tsc` doesn't check them
 
 ## Seed data
 
-`demo-noor` and its three entries are **synthetic**, not a real person. One entry is pre-flagged `needs_review` so the fail-safe shows up on the first retrieval.
+Patient `1001` and its three entries are **synthetic**, not a real person. One entry is pre-flagged `needs_review` so the fail-safe shows up on the first retrieval.

@@ -1,5 +1,5 @@
 // Ports: interfaces the use cases depend on. Implementations live in ../infra.
-import type { Confidence, Event, NewEvent, Patient, Transcript } from "./types.ts";
+import type { CallLang, Confidence, Event, NewEvent, Patient, Transcript } from "./types.ts";
 
 /**
  * Event storage. `pin` is ONLY key material for encrypting content at rest (EncryptedStorage, later).
@@ -26,25 +26,24 @@ export interface AudioInput {
   mimeType: string;
 }
 
-/** Speech -> English text. Implementations must not persist audio. */
+/** Speech in the call language -> English text. Implementations must not persist audio. */
 export interface Transcriber {
-  translateToEnglish(audio: AudioInput, sourceLang: string): Promise<Transcript>;
+  translateToEnglish(audio: AudioInput, callLang: CallLang): Promise<Transcript>;
 }
 
 /** Raw, unvalidated LLM structuring output. The use case validates it. */
 export type RawStructured = unknown;
 
-export interface InstructionTranslation {
-  text_en: string;
-  text_patient: string;
+export interface Translation {
+  text: string;
   confidence: Confidence | null;
 }
 
 export interface Summarizer {
   /** English transcript -> loose JSON with note_en/confidence/details. May throw or return junk. */
   structureSymptom(transcriptEn: string): Promise<RawStructured>;
-  /** History -> SMS-length summary written in targetLang. */
-  summarizeHistory(events: Event[], targetLang: string): Promise<string>;
-  /** Doctor text -> faithful English + patient-language versions. No added advice. */
-  translateInstruction(text: string, sourceLang: string, patientLang: string): Promise<InstructionTranslation>;
+  /** History -> short summary written in the call language. */
+  summarizeHistory(events: Event[], callLang: CallLang): Promise<string>;
+  /** Stored English text -> call language, for playback. Faithful, nothing added. */
+  fromEnglish(textEn: string, callLang: CallLang): Promise<Translation>;
 }

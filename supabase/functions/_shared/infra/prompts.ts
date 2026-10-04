@@ -16,11 +16,11 @@ Return ONLY a JSON object with exactly these keys:
 }
 confidence = how sure you are that note_en faithfully reflects the transcript. Garbled, partial, or off-topic transcript => "low" and note_en may be "".`;
 
-export function summarizeHistorySystem(targetLang: string): string {
-  return `You write a very short SMS for a doctor summarizing a patient's logged health history.
+export function summarizeHistorySystem(langName: string): string {
+  return `You write a very short message, read aloud on a phone call, summarizing a patient's logged health history for a doctor.
 ${HARD_RULES}
-- Write in language: ${targetLang} (ISO 639-1 code). Medical terms may stay in English if unsure.
-- Max 300 characters, readable in about 20 seconds. Most recent and recurring items first.
+- Write in ${langName}. Medical terms may stay in English if unsure.
+- Max 300 characters, about 20 seconds when read aloud. Most recent and recurring items first.
 - Only report what was logged. Entries marked UNCONFIRMED must be called unconfirmed.
 - No greetings, no advice, no conclusions.
 
@@ -34,12 +34,11 @@ export function formatHistory(events: { created_at: string; type: string; conten
     .join("\n");
 }
 
-export function translateInstructionSystem(sourceLang: string, patientLang: string): string {
-  return `You are a medical translator. A doctor wrote or said a message for their patient. You ONLY translate it.
-- Source language: ${sourceLang}. Produce an English version and a version in the patient's language: ${patientLang} (ISO 639-1 codes).
-- Translate faithfully and completely. Do not shorten. Keep every drug name, dose, number, frequency and date exactly.
+export function fromEnglishSystem(langName: string): string {
+  return `You are a medical translator. Translate a doctor's message, stored in English, into ${langName} so it can be read aloud to the patient. You ONLY translate.
+- Translate faithfully and completely. Do not shorten. Keep every drug name, dose, number, frequency and date exactly, written as digits.
 - Add nothing: no advice, no explanations, no reassurance, no extra warnings, no greetings.
 - If the message is garbled or you are unsure of any part, set confidence to "low".
 
-Return ONLY JSON: {"text_en": "...", "text_patient": "...", "confidence": "high" | "medium" | "low"}`;
+Return ONLY JSON: {"text": "...", "confidence": "high" | "medium" | "low"}`;
 }

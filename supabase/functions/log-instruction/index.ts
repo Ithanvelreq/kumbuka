@@ -1,8 +1,8 @@
-// POST { patient_id, pin, type, source_lang?, patient_lang?, text } | { ..., audio: { base64, mime_type } }
-// type: doctor_diagnosis | doctor_prescription | symptom_log (consult recap, reported_by: doctor)
+// POST { patient_id, pin, type, call_lang: "sw" | "en", audio: { base64, mime_type } }
+// type: doctor_diagnosis | doctor_prescription | symptom_log (consult note, reported_by: doctor)
 import { ValidationError } from "../_shared/domain/errors.ts";
 import { makeDeps } from "../_shared/infra/container.ts";
-import { handler, optionalString, parseAudio, requireString } from "../_shared/infra/http.ts";
+import { handler, parseAudio, requireCallLang, requireString } from "../_shared/infra/http.ts";
 import { INSTRUCTION_TYPES, type InstructionType, logInstruction } from "../_shared/use-cases/log-instruction.ts";
 
 Deno.serve(handler(async (body) => {
@@ -13,10 +13,8 @@ Deno.serve(handler(async (body) => {
       patientId: requireString(body, "patient_id"),
       pin: requireString(body, "pin"),
       type: type as InstructionType,
-      sourceLang: optionalString(body, "source_lang", "en"),
-      patientLang: optionalString(body, "patient_lang", "sw"),
-      text: typeof body.text === "string" ? body.text : undefined,
-      audio: body.audio ? parseAudio(body) : undefined,
+      callLang: requireCallLang(body),
+      audio: parseAudio(body),
     },
     makeDeps(),
   );
