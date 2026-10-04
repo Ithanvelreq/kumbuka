@@ -33,3 +33,13 @@ export function formatHistory(events: { created_at: string; type: string; conten
     .map((e) => `${e.created_at.slice(0, 10)} [${e.type}]${e.content.needs_review ? " UNCONFIRMED" : ""}: ${e.content.note_en || "(unclear)"}`)
     .join("\n");
 }
+
+export function translateInstructionSystem(sourceLang: string, patientLang: string): string {
+  return `You are a medical translator. A doctor wrote or said a message for their patient. You ONLY translate it.
+- Source language: ${sourceLang}. Produce an English version and a version in the patient's language: ${patientLang} (ISO 639-1 codes).
+- Translate faithfully and completely. Do not shorten. Keep every drug name, dose, number, frequency and date exactly.
+- Add nothing: no advice, no explanations, no reassurance, no extra warnings, no greetings.
+- If the message is garbled or you are unsure of any part, set confidence to "low".
+
+Return ONLY JSON: {"text_en": "...", "text_patient": "...", "confidence": "high" | "medium" | "low"}`;
+}
