@@ -54,6 +54,16 @@ async function call<T>(fn: string, body: Record<string, unknown>): Promise<ApiRe
   }
 }
 
+export type InstructionType = "doctor_diagnosis" | "doctor_prescription" | "symptom_log";
+
+export interface InboxMessage {
+  id: string;
+  type: "doctor_diagnosis" | "doctor_prescription";
+  created_at: string;
+  text: string;
+  needs_review: boolean;
+}
+
 export const api = {
   signup: (id: string, pin: string, display_name: string) =>
     call<{ patient: Patient }>("auth", { action: "signup", id, pin, display_name }),
@@ -62,4 +72,13 @@ export const api = {
     call<{ event: StoredEvent }>("ingest", { patient_id, pin, audio, source_lang }),
   retrieve: (patient_id: string, pin: string, target_lang: string) =>
     call<{ summary: string; fallback: boolean; entries: EntryView[] }>("retrieve", { patient_id, pin, target_lang }),
+  logInstruction: (
+    patient_id: string,
+    pin: string,
+    type: InstructionType,
+    source_lang: string,
+    input: { text: string } | { audio: AudioPayload },
+    patient_lang = "sw",
+  ) => call<{ event: StoredEvent }>("log-instruction", { patient_id, pin, type, source_lang, patient_lang, ...input }),
+  inbox: (patient_id: string, pin: string) => call<{ messages: InboxMessage[] }>("inbox", { patient_id, pin }),
 };

@@ -46,3 +46,13 @@ export function decideNeedsReview(input: ReviewInput): ReviewDecision {
     ? { needs_review: true, review_reason: [...new Set(reasons)].join("; ") }
     : { needs_review: false, review_reason: null };
 }
+
+/**
+ * Doses and dates must survive translation unchanged. Every number in the source must appear in the
+ * translation; otherwise flag for review. Pure, conservative string check.
+ */
+export function numbersPreserved(source: string, translated: string): boolean {
+  const nums = (s: string) => (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => n.replace(",", "."));
+  const out = new Set(nums(translated));
+  return nums(source).every((n) => out.has(n));
+}

@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { api, type Patient } from "@/lib/api";
+import { api, type InstructionType, type Patient } from "@/lib/api";
 import { LANGS } from "@/lib/langs";
+import type { PickedAudio } from "./AudioPicker";
+import { InstructionForm } from "./InstructionForm";
 import { LoginScreen } from "./LoginScreen";
 import { PhoneFrame } from "./PhoneFrame";
 import { bubble, BubbleList, type Bubble } from "./SmsBubble";
@@ -27,6 +29,18 @@ export function DoctorPhone() {
     }
   }
 
+  async function sendInstruction(type: InstructionType, input: { text: string } | { audio: PickedAudio }) {
+    push(bubble("out", "text" in input ? input.text : `🎤 ${input.audio.label}`, `→ ${patientId}`));
+    setBusy(true);
+    // Typed text is in the doctor's selected language; spoken audio is auto-detected by Whisper.
+    const res = await api.logInstruction(patientId.trim(), patientPin, type, lang, "text" in input ? input : { audio: input.audio.payload });
+    setBusy(false);
+    if (!res.ok) return push(bubble("error", res.message));
+    const c = res.data.event.content;
+    const sent = `Sent. Patient sees (${LANGS.sw}): ${String(c.details.text_patient ?? "")}`;
+    push(c.needs_review ? bubble("flagged", "Saved, but the patient will be asked to check with a person.", c.review_reason ?? undefined) : bubble("in", sent, `Stored (English): ${c.note_en}`));
+  }
+
   const input = "rounded-lg border border-slate-300 px-2 py-1.5 text-sm";
   return (
     <PhoneFrame title="Doctor phone" subtitle={doctor ? `Dr. ${doctor.display_name} · reads in ${LANGS[lang]}` : undefined}>
@@ -47,6 +61,7 @@ export function DoctorPhone() {
             </button>
           </div>
           <BubbleList bubbles={bubbles} busy={busy} />
+          <InstructionForm disabled={busy || !patientId || !patientPin} onSend={sendInstruction} />
         </>
       )}
     </PhoneFrame>
