@@ -1,12 +1,12 @@
 // Enforces the hexagonal import direction: infra -> use cases -> domain, never outward.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = "supabase/functions/_shared";
 const importsOf = (file: string) => [...readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]);
-const filesIn = (dir: string) => readdirSync(join(root, dir)).filter((f) => f.endsWith(".ts")).map((f) => join(root, dir, f));
+const filesIn = (dir: string) => !existsSync(join(root, dir)) ? [] : readdirSync(join(root, dir)).filter((f) => f.endsWith(".ts")).map((f) => join(root, dir, f));
 
 test("domain imports only domain", () => {
   for (const f of filesIn("domain")) {
