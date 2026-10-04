@@ -2,8 +2,9 @@ import { FunctionsFetchError, FunctionsHttpError, FunctionsRelayError } from "@s
 import { supabase } from "@/integrations/supabase/client";
 
 export const BUSY = "Service busy, try again";
-// Server does 2 x 20s attempts per Groq call; give it room, but never hang the UI forever.
-const CLIENT_TIMEOUT_MS = 60_000;
+// Worst case server-side: 2 Groq calls x 2 attempts x 15s (+ short backoffs) ~ 70s.
+// Stay above that so we don't report "busy" for a request that then succeeds, but never hang forever.
+const CLIENT_TIMEOUT_MS = 90_000;
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; message: string };
 

@@ -2,7 +2,7 @@
 import { ServiceBusyError } from "../domain/errors.ts";
 
 const BASE_URL = "https://api.groq.com/openai/v1";
-export const GROQ_TIMEOUT_MS = 20_000;
+export const GROQ_TIMEOUT_MS = 15_000;
 const MAX_ATTEMPTS = 2;
 
 export const WHISPER_MODEL = Deno.env.get("GROQ_WHISPER_MODEL") ?? "whisper-large-v3";
